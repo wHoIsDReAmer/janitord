@@ -1,11 +1,12 @@
-mod cli;
-
 use clap::Parser;
 
-use crate::cli::{Cli, Command};
+use janitord::cli::{Cli, Command};
 
 fn main() {
     match Cli::parse().command {
-        Command::Scan(args) => todo!("scan {:?}", args.paths),
+        Command::Scan(args) => {
+            let vec = janitord::scan::scan(&args.paths);
+            println!("{:?}", vec)
+        }
     }
 }
