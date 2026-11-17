@@ -7,13 +7,16 @@ use std::{
     },
 };
 
+use crate::core::Element;
+
+use anyhow::Result;
 use rayon::Scope;
 
 const DEPS: &[(&str, &str)] = &[("target", "Cargo.toml"), ("node_modules", "package.json")];
 
-type Found = Mutex<Vec<(PathBuf, Arc<AtomicU64>)>>;
+type Found<'s> = Mutex<Vec<Element<'s>>>;
 
-pub fn scan(roots: &[PathBuf]) -> Vec<(PathBuf, u64)> {
+pub fn scan(roots: &[PathBuf]) -> Result<Vec<Found>> {
     let found = Found::default();
 
     rayon::scope(|s| {
@@ -23,12 +26,11 @@ pub fn scan(roots: &[PathBuf]) -> Vec<(PathBuf, u64)> {
         }
     });
 
-    found
-        .into_inner()
-        .unwrap()
+    Ok(found
+        .into_inner()?
         .into_iter()
         .map(|(path, size)| (path, size.load(Ordering::Relaxed)))
-        .collect()
+        .collect())
 }
 
 fn discover<'s>(s: &Scope<'s>, dir: PathBuf, found: &'s Found) {

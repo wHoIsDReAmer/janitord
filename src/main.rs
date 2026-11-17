@@ -1,12 +1,15 @@
-use clap::Parser;
-
 use janitord::cli::{Cli, Command};
 
-fn main() {
+use anyhow::Result;
+use clap::Parser;
+
+fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Scan(args) => {
-            let vec = janitord::scan::scan(&args.paths);
+            let vec = janitord::scan::scan(&args.paths)?;
             println!("{:?}", vec)
         }
     }
+
+    Ok(())
 }
