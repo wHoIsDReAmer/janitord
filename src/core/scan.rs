@@ -7,14 +7,31 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
+    time::UNIX_EPOCH,
 };
 
 use anyhow::Result;
+use jiff::Timestamp;
 use rayon::Scope;
 
 const DEPS: &[(&str, &str)] = &[("target", "Cargo.toml"), ("node_modules", "package.json")];
 
-type Found = Mutex<Vec<(PathBuf, Arc<AtomicU64>)>>;
+#[derive(Default)]
+struct Tally {
+    size: AtomicU64,
+    last_modified: AtomicU64,
+}
+
+impl Tally {
+    fn last_modified(&self) -> Timestamp {
+        i64::try_from(self.last_modified.load(Ordering::Relaxed))
+            .ok()
+            .and_then(|s| Timestamp::from_second(s).ok())
+            .unwrap_or(Timestamp::MAX)
+    }
+}
+
+type Found = Mutex<Vec<(PathBuf, Arc<Tally>)>>;
 
 pub fn scan(roots: &[PathBuf]) -> Result<Vec<Element>> {
     let found = Found::default();
@@ -29,7 +46,7 @@ pub fn scan(roots: &[PathBuf]) -> Result<Vec<Element>> {
     Ok(found
         .into_inner()?
         .into_iter()
-        .map(|(path, size)| Element::new(path, size.load(Ordering::Relaxed)))
+        .map(|(path, t)| Element::new(path, t.size.load(Ordering::Relaxed), t.last_modified()))
         .collect())
 }
 
@@ -45,36 +62,47 @@ fn discover<'s>(s: &Scope<'s>, dir: PathBuf, found: &'s Found) {
 
         let path = entry.path();
         if is_artifact(&path) {
-            let size = Arc::new(AtomicU64::new(0));
+            let tally = Arc::new(Tally::default());
+
+            if let Ok(meta) = entry.metadata() {
+                tally
+                    .last_modified
+                    .store(unix_secs(&meta), Ordering::Relaxed);
+            }
+
             found
                 .lock()
                 .unwrap()
-                .push((path.clone(), Arc::clone(&size)));
-            s.spawn(move |s| measure(s, path, size));
+                .push((path.clone(), Arc::clone(&tally)));
+            s.spawn(move |s| measure(s, path, tally));
         } else {
             s.spawn(move |s| discover(s, path, found));
         }
     }
 }
 
-fn measure<'s>(s: &Scope<'s>, dir: PathBuf, size: Arc<AtomicU64>) {
+fn measure<'s>(s: &Scope<'s>, dir: PathBuf, tally: Arc<Tally>) {
     let Ok(entries) = fs::read_dir(&dir) else {
         return;
     };
 
-    let mut local = 0;
+    let mut size = 0;
+    let mut newest = 0;
 
     for entry in entries.flatten() {
         let Ok(meta) = entry.metadata() else { continue };
+        newest = newest.max(unix_secs(&meta));
+
         if meta.is_dir() {
-            let (path, size) = (entry.path(), Arc::clone(&size));
-            s.spawn(move |s| measure(s, path, size));
+            let (path, tally) = (entry.path(), Arc::clone(&tally));
+            s.spawn(move |s| measure(s, path, tally));
         } else {
-            local += meta.len();
+            size += meta.len();
         }
     }
 
-    size.fetch_add(local, Ordering::Relaxed);
+    tally.size.fetch_add(size, Ordering::Relaxed);
+    tally.last_modified.fetch_max(newest, Ordering::Relaxed);
 }
 
 fn is_artifact(dir: &Path) -> bool {
@@ -84,4 +112,11 @@ fn is_artifact(dir: &Path) -> bool {
 
     DEPS.iter()
         .any(|(dir_name, marker)| name == *dir_name && parent.join(marker).is_file())
+}
+
+fn unix_secs(meta: &fs::Metadata) -> u64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs())
 }
