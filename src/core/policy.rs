@@ -174,4 +174,24 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn valid_should_start() -> Result<()> {
+        let p = Policy::builder().free_space(0.20, 0.30).build()?;
+
+        assert_eq!(p.should_start(10, 100), true);
+        assert_eq!(p.should_start(30, 100), false);
+
+        Ok(())
+    }
+
+    #[test]
+    fn valid_should_stop() -> Result<()> {
+        let p = Policy::builder().free_space(0.20, 0.30).build()?;
+
+        assert_eq!(p.should_stop(35, 100), true);
+        assert_eq!(p.should_start(25, 100), false);
+
+        Ok(())
+    }
 }
