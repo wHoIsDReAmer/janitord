@@ -33,6 +33,26 @@ impl Policy {
         Ok(self.is_large(size) && self.is_old(modified, now)?)
     }
 
+    pub fn should_start(&self, free: u64, total: u64) -> bool {
+        let Some(free_space) = self.free_space else {
+            return false;
+        };
+
+        Self::free_ratio(free, total).is_some_and(|ratio| ratio < free_space.start_below)
+    }
+
+    pub fn should_stop(&self, free: u64, total: u64) -> bool {
+        let Some(free_space) = self.free_space else {
+            return false;
+        };
+
+        Self::free_ratio(free, total).is_some_and(|ratio| ratio >= free_space.stop_at)
+    }
+
+    fn free_ratio(free: u64, total: u64) -> Option<f64> {
+        (total > 0).then(|| free as f64 / total as f64)
+    }
+
     fn is_empty(&self) -> bool {
         self.old_threshold.is_none() && self.size_threshold.is_none()
     }

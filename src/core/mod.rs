@@ -4,25 +4,28 @@ pub mod scan;
 use std::path::PathBuf;
 
 use anyhow::Result;
+use jiff::ZonedDateTime;
+
+use crate::core::policy::Policy;
 
 #[derive(Debug)]
 pub struct Element {
     pub path: PathBuf,
     pub size: u64,
-    pub last_modified: jiff::Timestamp,
+    pub modified: jiff::Timestamp,
 }
 
 impl Element {
-    pub fn new(path: PathBuf, size: u64, last_modified: jiff::Timestamp) -> Self {
+    pub fn new(path: PathBuf, size: u64, modified: jiff::Timestamp) -> Self {
         Element {
             path,
             size,
-            last_modified,
+            modified,
         }
     }
 
-    pub fn deletable() -> bool {
-        todo!()
+    pub fn deletable(&self, policy: &Policy, now: &ZonedDateTime) -> Result<bool> {
+        policy.matches(self.size, self.modified, now)
     }
 
     pub fn delete() -> Result<()> {
