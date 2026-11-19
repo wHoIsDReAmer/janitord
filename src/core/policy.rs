@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use jiff::{Span, Timestamp, ZonedDateTime};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Policy {
     // delete conditions
     old_threshold: Option<Span>,
