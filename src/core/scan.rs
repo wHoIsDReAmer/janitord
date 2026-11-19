@@ -1,8 +1,8 @@
-use crate::core::Element;
+use crate::core::{Element, kind::Kind};
 
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -13,8 +13,6 @@ use std::{
 use anyhow::Result;
 use jiff::Timestamp;
 use rayon::Scope;
-
-const DEPS: &[(&str, &str)] = &[("target", "Cargo.toml"), ("node_modules", "package.json")];
 
 #[derive(Default)]
 struct Tally {
@@ -31,26 +29,51 @@ impl Tally {
     }
 }
 
-type Found = Mutex<Vec<(PathBuf, Arc<Tally>)>>;
+struct Found {
+    path: PathBuf,
+    kind: &'static Kind,
+    tally: Arc<Tally>,
+}
+
+impl Found {
+    fn into_element(self) -> Element {
+        Element::new(
+            self.path,
+            self.kind,
+            self.tally.size.load(Ordering::Relaxed),
+            self.tally.last_modified(),
+        )
+    }
+}
+
+#[derive(Default)]
+struct Findings(Mutex<Vec<Found>>);
+
+impl Findings {
+    fn push(&self, found: Found) {
+        self.0.lock().unwrap().push(found);
+    }
+
+    fn into_elements(self) -> Result<Vec<Element>> {
+        let found = self.0.into_inner()?;
+        Ok(found.into_iter().map(Found::into_element).collect())
+    }
+}
 
 pub fn scan(roots: &[PathBuf]) -> Result<Vec<Element>> {
-    let found = Found::default();
+    let findings = Findings::default();
 
     rayon::scope(|s| {
         for root in roots {
-            let found = &found;
-            s.spawn(move |s| discover(s, root.clone(), found));
+            let findings = &findings;
+            s.spawn(move |s| discover(s, root.clone(), findings));
         }
     });
 
-    Ok(found
-        .into_inner()?
-        .into_iter()
-        .map(|(path, t)| Element::new(path, t.size.load(Ordering::Relaxed), t.last_modified()))
-        .collect())
+    findings.into_elements()
 }
 
-fn discover<'s>(s: &Scope<'s>, dir: PathBuf, found: &'s Found) {
+fn discover<'s>(s: &Scope<'s>, dir: PathBuf, findings: &'s Findings) {
     let Ok(entries) = fs::read_dir(&dir) else {
         return;
     };
@@ -61,7 +84,7 @@ fn discover<'s>(s: &Scope<'s>, dir: PathBuf, found: &'s Found) {
         }
 
         let path = entry.path();
-        if is_artifact(&path) {
+        if let Some(kind) = Kind::detect(&path) {
             let tally = Arc::new(Tally::default());
 
             if let Ok(meta) = entry.metadata() {
@@ -70,13 +93,14 @@ fn discover<'s>(s: &Scope<'s>, dir: PathBuf, found: &'s Found) {
                     .store(unix_secs(&meta), Ordering::Relaxed);
             }
 
-            found
-                .lock()
-                .unwrap()
-                .push((path.clone(), Arc::clone(&tally)));
+            findings.push(Found {
+                path: path.clone(),
+                kind,
+                tally: Arc::clone(&tally),
+            });
             s.spawn(move |s| measure(s, path, tally));
         } else {
-            s.spawn(move |s| discover(s, path, found));
+            s.spawn(move |s| discover(s, path, findings));
         }
     }
 }
@@ -103,15 +127,6 @@ fn measure<'s>(s: &Scope<'s>, dir: PathBuf, tally: Arc<Tally>) {
 
     tally.size.fetch_add(size, Ordering::Relaxed);
     tally.last_modified.fetch_max(newest, Ordering::Relaxed);
-}
-
-fn is_artifact(dir: &Path) -> bool {
-    let (Some(name), Some(parent)) = (dir.file_name(), dir.parent()) else {
-        return false;
-    };
-
-    DEPS.iter()
-        .any(|(dir_name, marker)| name == *dir_name && parent.join(marker).is_file())
 }
 
 fn unix_secs(meta: &fs::Metadata) -> u64 {
